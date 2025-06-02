@@ -9,75 +9,75 @@ CACHE_DIR=${2:-}
 ENV_DIR=${3:-}
 
 ###############################################################################
-# NEW: avoid “same file” error on Scalingo (BUILD_DIR and CACHE_DIR are equal)
+# helper: cp that silently no-ops when src and dst are the same path
 ###############################################################################
-if [ "$BUILD_DIR" != "$CACHE_DIR" ]; then
-  # restore previously-cached source
-  cp -rp "$CACHE_DIR/." "$BUILD_DIR"
-else
-  echo "cache==build ⇒ skipping cache restore"
-fi
+safe_cp () {
+  local src="$1" dst="$2"; shift 2
+  if [ "$src" != "$dst" ]; then
+    cp "$@" "$src" "$dst"
+  else
+    echo "skip cp: $src == $dst"
+  fi
+}
+
 ###############################################################################
+# 1 – restore cached source (Heroku only; skipped on Scalingo)
+###############################################################################
+safe_cp "$CACHE_DIR/." "$BUILD_DIR" -rp
 
+HEROKU_DIR="$BUILD_DIR/.heroku"
+BIN_DIR="$HEROKU_DIR/bin"
 
-HEROKU_DIR=$BUILD_DIR/.heroku
-BIN_DIR=$HEROKU_DIR/bin
+###############################################################################
+# 2 – mirror build → $HOME (skipped when identical paths)
+###############################################################################
+safe_cp "$BUILD_DIR" "$HOME" -rpT
+cd "$HOME"
 
-# To enable the local source build cache path, copy the files and match the build path with the startup path.
-cp -rpT $BUILD_DIR $HOME
-cd $HOME
-
-if [ -f runtime.txt ]
-then
+# optional pinned Deno version
+if [ -f runtime.txt ]; then
   INSTALL_VERSION_OPTION="-s $(cat runtime.txt)"
 fi
-echo $INSTALL_VERSION_OPTION
+echo "$INSTALL_VERSION_OPTION"
 
-# install deno
-export DENO_INSTALL=$BUILD_DIR/.heroku
-export DENO_DIR=$BUILD_DIR/.heroku/cache
+# install Deno
+export DENO_INSTALL="$BUILD_DIR/.heroku"
+export DENO_DIR="$BUILD_DIR/.heroku/cache"
 curl -fsSL https://deno.land/x/install/install.sh | sh $INSTALL_VERSION_OPTION
 
-# set environment variables
+# runtime env vars
 PROFILE_PATH="$BUILD_DIR/.profile.d/deno.sh"
-mkdir -p $(dirname $PROFILE_PATH)
-echo 'export PATH="$HOME/.heroku/bin:$PATH"' >> $PROFILE_PATH
-echo 'export DENO_DIR="$HOME/.heroku/cache"' >> $PROFILE_PATH
+mkdir -p "$(dirname "$PROFILE_PATH")"
+echo 'export PATH="$HOME/.heroku/bin:$PATH"'  >> "$PROFILE_PATH"
+echo 'export DENO_DIR="$HOME/.heroku/cache"' >> "$PROFILE_PATH"
 
 set +e
 
-# download dependencies
-if [ -f Procfile ]
-then
-  SCRIPT_DIR=$(cd $(dirname $0); pwd)
-  source $SCRIPT_DIR/get_cache_command.sh
-  COMMAND=$(cat Procfile | grep -E '^(web|worker):')
-  if [ -n "$COMMAND" ]
-  then
+# dependency cache (optional)
+if [ -f Procfile ]; then
+  SCRIPT_DIR=$(cd "$(dirname "$0")"; pwd)
+  source "$SCRIPT_DIR/get_cache_command.sh"
+  COMMAND=$(grep -E '^(web|worker):' Procfile)
+  if [ -n "$COMMAND" ]; then
     CACHE_COMMAND=$(get_cache_command "$COMMAND")
-    if [ -n "$CACHE_COMMAND" ]
-    then
-      $BIN_DIR/$CACHE_COMMAND
-    fi
+    [ -n "$CACHE_COMMAND" ] && "$BIN_DIR/$CACHE_COMMAND"
   fi
 fi
 
-if [ -f heroku_build.ts ]
-then
-  #
-  # heroku_build.ts (Customizing the build process)
-  #
-  #export HEROKU_BUILD_DIR="$BUILD_DIR"
-  $BIN_DIR/deno run -A --unstable heroku_build.ts
-  cp -rpT $HOME $BUILD_DIR
-elif [ -f aleph.config.ts -a -f import_map.json ]
-then
-  #
-  # Aleph.js
-  #
+# custom build or Aleph.js
+if [ -f heroku_build.ts ]; then
+  "$BIN_DIR/deno" run -A --unstable heroku_build.ts
+  #############################################################################
+  # 3 – mirror $HOME → build (skipped when identical paths)
+  #############################################################################
+  safe_cp "$HOME" "$BUILD_DIR" -rpT
+elif [ -f aleph.config.ts ] && [ -f import_map.json ]; then
   ALEPH_PATH=$(jq -r '.imports."aleph/"' import_map.json)
-  $BIN_DIR/deno run --allow-net --allow-read=$HOME,$BUILD_DIR/.heroku --allow-write --allow-env --allow-run ${ALEPH_PATH}cli.ts build
-  $BIN_DIR/deno run --allow-net=deno.land ${ALEPH_PATH}cli.ts start --help > /dev/null
-  cp -rp .aleph $BUILD_DIR/.
+  "$BIN_DIR/deno" run --allow-net \
+                       --allow-read="$HOME,$BUILD_DIR/.heroku" \
+                       --allow-write --allow-env --allow-run \
+                       "${ALEPH_PATH}cli.ts" build
+  "$BIN_DIR/deno" run --allow-net=deno.land \
+                       "${ALEPH_PATH}cli.ts" start --help > /dev/null
+  safe_cp .aleph "$BUILD_DIR/." -rp
 fi
-
