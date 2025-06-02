@@ -8,6 +8,18 @@ BUILD_DIR=${1:-.}
 CACHE_DIR=${2:-}
 ENV_DIR=${3:-}
 
+###############################################################################
+# NEW: avoid “same file” error on Scalingo (BUILD_DIR and CACHE_DIR are equal)
+###############################################################################
+if [ "$BUILD_DIR" != "$CACHE_DIR" ]; then
+  # restore previously-cached source
+  cp -rp "$CACHE_DIR/." "$BUILD_DIR"
+else
+  echo "cache==build ⇒ skipping cache restore"
+fi
+###############################################################################
+
+
 HEROKU_DIR=$BUILD_DIR/.heroku
 BIN_DIR=$HEROKU_DIR/bin
 
